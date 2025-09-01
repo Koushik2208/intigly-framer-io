@@ -12,8 +12,8 @@ import {
 } from "react-native";
 import DrawingOverlay from "./components/DrawingOverlay";
 
-const COMMENTS_KEY = "comments_v1";
-const DRAWINGS_KEY = "drawings_v1";
+const COMMENTS_KEY = "comments_v2";
+const DRAWINGS_KEY = "drawings_v2";
 
 export default function Index() {
   const [isPlaying, setIsPlaying] = useState(false);
@@ -29,7 +29,6 @@ export default function Index() {
   const [selectedStrokeWidth, setSelectedStrokeWidth] = useState(4);
 
   const width = Dimensions.get("window").width;
-
   const videoSource =
     "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4";
 
@@ -86,7 +85,7 @@ export default function Index() {
     } catch {}
   };
 
-  // video controls
+  // Video controls
   const togglePlayPause = () => {
     if (isPlaying) {
       player.pause();
@@ -152,26 +151,11 @@ export default function Index() {
       color: p.color,
       strokeWidth: p.strokeWidth,
     };
-
     const updatedDrawings = {
       ...drawingsBySecond,
       [sec]: [...(drawingsBySecond[sec] ?? []), newPath],
     };
     await persistDrawings(updatedDrawings);
-
-    if (!comments.some((c) => c.timestamp === Math.floor(currentTime))) {
-      if (updatedDrawings[sec]?.length > 0) {
-        const drawComment: VideoComment = {
-          id: `draw-${Date.now()}`,
-          timestamp: Math.floor(currentTime),
-          text: "[Drawing feedback]",
-          displayTime: formatTime(currentTime),
-        };
-        await persistComments(
-          [...comments, drawComment].sort((a, b) => a.timestamp - b.timestamp)
-        );
-      }
-    }
   };
 
   const undoAtCurrentSecond = async () => {
@@ -181,13 +165,6 @@ export default function Index() {
 
     const next = { ...drawingsBySecond, [sec]: list.slice(0, -1) };
     await persistDrawings(next);
-
-    if (!next[sec]?.length) {
-      const filtered = comments.filter(
-        (c) => c.timestamp !== Math.floor(currentTime)
-      );
-      await persistComments(filtered);
-    }
   };
 
   const clearAtCurrentSecond = async () => {
@@ -196,12 +173,40 @@ export default function Index() {
 
     const next = { ...drawingsBySecond, [sec]: [] };
     await persistDrawings(next);
-
-    const filtered = comments.filter(
-      (c) => c.timestamp !== Math.floor(currentTime)
-    );
-    await persistComments(filtered);
   };
+
+  function aggregateFeedback(
+    comments: VideoComment[],
+    drawingsBySecond: Record<string, DrawingPath[]>
+  ): VideoComment[] {
+    const textualCommentsMap = new Map<number, VideoComment>();
+    comments.forEach((c) => textualCommentsMap.set(c.timestamp, c));
+
+    const aggregated: VideoComment[] = [];
+
+    Object.entries(drawingsBySecond).forEach(([secStr, paths]) => {
+      const sec = parseInt(secStr);
+      if (!paths.length) return;
+
+      if (!textualCommentsMap.has(sec)) {
+        aggregated.push({
+          id: `draw-${sec}`,
+          timestamp: sec,
+          text: "[Drawing feedback]",
+          displayTime: formatTime(sec),
+        });
+      }
+    });
+
+    return [...comments, ...aggregated].sort(
+      (a, b) => a.timestamp - b.timestamp
+    );
+  }
+
+  const aggregatedComments = useMemo(
+    () => aggregateFeedback(comments, drawingsBySecond),
+    [comments, drawingsBySecond]
+  );
 
   const visiblePaths: DrawingPath[] = drawingsBySecond[currentSecondStr] ?? [];
 
@@ -223,15 +228,14 @@ export default function Index() {
             allowsFullscreen
             allowsPictureInPicture
           />
-          {drawingEnabled && (
-            <DrawingOverlay
-              isEnabled={drawingEnabled}
-              color={selectedColor}
-              strokeWidth={selectedStrokeWidth}
-              paths={visiblePaths}
-              onAddPath={handleAddPathAtCurrentSecond}
-            />
-          )}
+
+          <DrawingOverlay
+            isEnabled={drawingEnabled}
+            color={selectedColor}
+            strokeWidth={selectedStrokeWidth}
+            paths={visiblePaths}
+            onAddPath={handleAddPathAtCurrentSecond}
+          />
         </View>
 
         <View className="flex-row justify-center items-center p-4 mt-2">
@@ -266,11 +270,11 @@ export default function Index() {
         </Text>
 
         <Text className="text-gray-800 font-semibold p-3">
-          Comments ({comments.length})
+          Comments ({aggregatedComments.length})
         </Text>
 
         <ScrollView className="flex-1">
-          {comments.map((comment) => (
+          {aggregatedComments.map((comment) => (
             <View
               key={comment.id}
               className="bg-white border border-gray-200 m-2 p-3 rounded-lg flex-row justify-between items-start"
@@ -285,12 +289,14 @@ export default function Index() {
                 <Text className="text-gray-800 text-sm">{comment.text}</Text>
               </TouchableOpacity>
 
-              <TouchableOpacity
-                className="w-6 h-6 rounded-full justify-center items-center ml-2 bg-red-500"
-                onPress={() => deleteComment(comment.id)}
-              >
-                <Ionicons name="close" size={16} color="white" />
-              </TouchableOpacity>
+              {comment.id && !comment.id.startsWith("draw-") && (
+                <TouchableOpacity
+                  className="w-6 h-6 rounded-full justify-center items-center ml-2 bg-red-500"
+                  onPress={() => deleteComment(comment.id)}
+                >
+                  <Ionicons name="close" size={16} color="white" />
+                </TouchableOpacity>
+              )}
             </View>
           ))}
         </ScrollView>
