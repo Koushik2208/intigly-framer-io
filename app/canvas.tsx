@@ -17,12 +17,7 @@ interface DrawingPath {
   strokeWidth: number;
 }
 
-interface Point {
-  x: number;
-  y: number;
-}
-
-const { width, height } = Dimensions.get("window");
+const { height } = Dimensions.get("window");
 const CANVAS_HEIGHT = height * 0.6;
 
 export default function Canvas() {

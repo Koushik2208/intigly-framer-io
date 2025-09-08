@@ -35,7 +35,36 @@
           "backgroundColor": "#ffffff"
         }
       ],
-      "expo-video"
+      "expo-video",
+      [
+        "expo-font",
+        {
+          "fonts": ["./assets/fonts/FiraSans-MediumItalic.ttf"],
+          "android": {
+            "fonts": [
+              {
+                "fontFamily": "ppneuemontreal",
+                "fontDefinitions": [
+                  {
+                    "path": "./assets/fonts/ppneuemontreal-book.otf",
+                    "weight": 400
+                  },
+                  {
+                    "path": "./assets/fonts/ppneuemontreal-medium.otf",
+                    "weight": 500
+                  }
+                ]
+              }
+            ]
+          },
+          "ios": {
+            "fonts": [
+              "./assets/fonts/ppneuemontreal-book.otf",
+              "./assets/fonts/ppneuemontreal-medium.otf"
+            ]
+          }
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true

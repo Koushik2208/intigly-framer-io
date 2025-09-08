@@ -1,9 +1,19 @@
-import { Ionicons } from "@expo/vector-icons";
-import AsyncStorage from "@react-native-async-storage/async-storage";
-import { VideoView, useVideoPlayer } from "expo-video";
-import React, { useEffect, useMemo, useState } from "react";
 import {
-  Dimensions,
+  Entypo,
+  EvilIcons,
+  Ionicons,
+  SimpleLineIcons,
+} from "@expo/vector-icons";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import Slider from "@react-native-community/slider";
+import { Image } from "expo-image";
+import { VideoView, useVideoPlayer } from "expo-video";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import {
+  Keyboard,
+  KeyboardAvoidingView,
+  Platform,
+  Pressable,
   ScrollView,
   Text,
   TextInput,
@@ -12,8 +22,32 @@ import {
 } from "react-native";
 import DrawingOverlay from "./components/DrawingOverlay";
 
-const COMMENTS_KEY = "comments_v2";
-const DRAWINGS_KEY = "drawings_v2";
+type Reply = {
+  id: string;
+  parentId: string;
+  timestamp: number;
+  text: string;
+  displayTime: string;
+};
+
+type VideoComment = {
+  id: string;
+  timestamp: number;
+  text: string;
+  displayTime: string;
+  replies: Reply[];
+  isDrawing?: boolean;
+};
+
+type DrawingPath = {
+  id: string;
+  data: string;
+  color: string;
+  strokeWidth: number;
+};
+
+const COMMENTS_KEY = "comments_v3";
+const DRAWINGS_KEY = "drawings_v3";
 
 export default function Index() {
   const [isPlaying, setIsPlaying] = useState(false);
@@ -22,13 +56,27 @@ export default function Index() {
   const [drawingsBySecond, setDrawingsBySecond] = useState<
     Record<string, DrawingPath[]>
   >({});
-  const [newComment, setNewComment] = useState("");
-
+  const [newInput, setNewInput] = useState("");
+  const [replyTo, setReplyTo] = useState<VideoComment | null>(null);
   const [drawingEnabled, setDrawingEnabled] = useState(false);
-  const [selectedColor, setSelectedColor] = useState("#00FF00");
-  const [selectedStrokeWidth, setSelectedStrokeWidth] = useState(4);
+  const [selectedColor, setSelectedColor] = useState("#EF4444");
+  // const [selectedStrokeWidth, setSelectedStrokeWidth] = useState(4);
+  const [keyboardVisible, setKeyboardVisible] = useState(false);
+  const [activeCommentId, setActiveCommentId] = useState<string | null>(null);
+  const [showOverlay, setShowOverlay] = useState(false);
+  // const [fullScreen, setFullScreen] = useState(false);
 
-  const width = Dimensions.get("window").width;
+  const AVATARS = {
+    noah: require("../assets/images/noah.png"),
+    amina: require("../assets/images/amina.png"),
+    user: require("../assets/images/user.png"),
+    emoji: require("../assets/images/emoji.png"),
+  };
+
+  const videoRef = useRef<VideoView>(null);
+  const inputRef = useRef<TextInput>(null);
+
+  // const width = Dimensions.get("window").width;
   const videoSource =
     "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4";
 
@@ -42,6 +90,22 @@ export default function Index() {
     () => String(Math.floor(currentTime)),
     [currentTime]
   );
+
+  // Overlay auto-hide
+  const overlayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const triggerOverlay = () => {
+    setShowOverlay(true);
+    if (overlayTimerRef.current) clearTimeout(overlayTimerRef.current);
+    overlayTimerRef.current = setTimeout(() => setShowOverlay(false), 3000);
+  };
+
+  const enterFullscreen = async () => {
+    await videoRef.current?.enterFullscreen();
+  };
+
+  // const exitFullscreen = async () => {
+  //   await videoRef.current?.exitFullscreen();
+  // };
 
   useEffect(() => {
     (async () => {
@@ -61,6 +125,21 @@ export default function Index() {
     }, 500);
     return () => clearInterval(interval);
   }, [player]);
+
+  useEffect(() => {
+    const showSub = Keyboard.addListener("keyboardDidShow", () => {
+      setKeyboardVisible(true);
+    });
+    const hideSub = Keyboard.addListener("keyboardDidHide", () => {
+      setKeyboardVisible(false);
+      setReplyTo(null); // cancel reply when keyboard is dismissed
+    });
+
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
 
   const formatTime = (seconds: number): string => {
     const whole = Math.floor(seconds);
@@ -96,28 +175,60 @@ export default function Index() {
     }
   };
 
-  const seekForward = () => {
-    player.currentTime = Math.min(player.currentTime + 10, player.duration);
+  const handleDraw = () => {
+    setDrawingEnabled(!drawingEnabled);
+    if (!drawingEnabled) {
+      player.pause();
+      setIsPlaying(false);
+    } else {
+      player.play();
+      setIsPlaying(true);
+    }
   };
 
-  const seekBackward = () => {
-    player.currentTime = Math.max(player.currentTime - 10, 0);
-  };
+  // const seekForward = () => {
+  //   player.currentTime = Math.min(player.currentTime + 10, player.duration);
+  // };
 
-  const addComment = async () => {
-    if (!newComment.trim()) return;
+  // const seekBackward = () => {
+  //   player.currentTime = Math.max(player.currentTime - 10, 0);
+  // };
+
+  // Add comment or reply
+  const handleSubmit = async () => {
+    if (!newInput.trim()) return;
     const ts = Math.floor(currentTime);
-    const comment: VideoComment = {
-      id: Date.now().toString(),
-      timestamp: ts,
-      text: newComment.trim(),
-      displayTime: formatTime(ts),
-    };
-    const next = [...comments, comment].sort(
-      (a, b) => a.timestamp - b.timestamp
-    );
-    await persistComments(next);
-    setNewComment("");
+
+    if (replyTo) {
+      const reply: Reply = {
+        id: Date.now().toString(),
+        parentId: replyTo.id,
+        timestamp: ts,
+        text: newInput.trim(),
+        displayTime: formatTime(ts),
+      };
+      const updated = comments.map((c) =>
+        c.id === replyTo.id ? { ...c, replies: [...c.replies, reply] } : c
+      );
+      await persistComments(updated);
+      setReplyTo(null);
+    } else {
+      const comment: VideoComment = {
+        id: Date.now().toString(),
+        timestamp: ts,
+        text: newInput.trim(),
+        displayTime: formatTime(ts),
+        replies: [],
+      };
+      const next = [...comments, comment].sort(
+        (a, b) => a.timestamp - b.timestamp
+      );
+      await persistComments(next);
+    }
+
+    setNewInput("");
+    player.pause();
+    setIsPlaying(false);
   };
 
   const jumpToComment = (timestamp: number) => {
@@ -129,16 +240,7 @@ export default function Index() {
     await persistComments(next);
   };
 
-  const openDrawMode = () => {
-    player.pause();
-    setIsPlaying(false);
-    setDrawingEnabled(true);
-  };
-
-  const closeDrawMode = () => {
-    setDrawingEnabled(false);
-  };
-
+  // Drawing
   const handleAddPathAtCurrentSecond = async (p: {
     data: string;
     color: string;
@@ -158,23 +260,7 @@ export default function Index() {
     await persistDrawings(updatedDrawings);
   };
 
-  const undoAtCurrentSecond = async () => {
-    const sec = currentSecondStr;
-    const list = drawingsBySecond[sec] ?? [];
-    if (!list.length) return;
-
-    const next = { ...drawingsBySecond, [sec]: list.slice(0, -1) };
-    await persistDrawings(next);
-  };
-
-  const clearAtCurrentSecond = async () => {
-    const sec = currentSecondStr;
-    if (!drawingsBySecond[sec]?.length) return;
-
-    const next = { ...drawingsBySecond, [sec]: [] };
-    await persistDrawings(next);
-  };
-
+  // Aggregation
   function aggregateFeedback(
     comments: VideoComment[],
     drawingsBySecond: Record<string, DrawingPath[]>
@@ -194,6 +280,8 @@ export default function Index() {
           timestamp: sec,
           text: "[Drawing feedback]",
           displayTime: formatTime(sec),
+          replies: [],
+          isDrawing: true,
         });
       }
     });
@@ -211,187 +299,253 @@ export default function Index() {
   const visiblePaths: DrawingPath[] = drawingsBySecond[currentSecondStr] ?? [];
 
   return (
-    <View className="flex-1 bg-white pt-8 px-3">
-      <ScrollView
-        className="flex-1"
-        showsVerticalScrollIndicator={false}
-        contentContainerStyle={{ paddingBottom: 190 }}
-      >
-        <View className="relative">
+    <View className="flex-1 bg-white">
+      {/* Title */}
+      <Text className="mb-[16px] mt-[16px] px-[16px] text-center font-ppneuemontreal-medium">
+        Nothing 14 Launch
+      </Text>
+
+      {/* Video container */}
+      <View className="items-center mb-[10px]">
+        <Pressable
+          onPress={triggerOverlay}
+          className="rounded-xl aspect-[16/9] w-[90%] relative overflow-hidden"
+        >
           <VideoView
+            ref={videoRef}
             style={{
-              width: width - 24,
-              height: ((width - 24) * 9) / 16,
+              width: "100%",
+              height: "100%",
               borderRadius: 12,
             }}
             player={player}
-            allowsFullscreen
-            allowsPictureInPicture
+            allowsFullscreen={true}
+            nativeControls={false}
           />
 
           <DrawingOverlay
             isEnabled={drawingEnabled}
             color={selectedColor}
-            strokeWidth={selectedStrokeWidth}
+            // strokeWidth={selectedStrokeWidth}
             paths={visiblePaths}
             onAddPath={handleAddPathAtCurrentSecond}
           />
-        </View>
 
-        <View className="flex-row justify-center items-center p-4 mt-2">
-          <TouchableOpacity
-            className="p-3 mx-2 rounded-full border border-gray-300"
-            onPress={seekBackward}
-          >
-            <Ionicons name="play-back" size={24} color="#333" />
-          </TouchableOpacity>
+          {showOverlay && (
+            <View className="absolute bottom-0 left-0 right-0">
+              <Slider
+                style={{
+                  width: "100%",
+                  height: 6,
+                  backgroundColor: "#0E8747",
+                }}
+                minimumValue={0}
+                maximumValue={player.duration || 0}
+                value={currentTime}
+                minimumTrackTintColor="#0E8747"
+                maximumTrackTintColor="#0E8747"
+                thumbTintColor="#fff"
+                onSlidingComplete={(val) => {
+                  player.currentTime = val;
+                  setCurrentTime(val);
+                }}
+              />
 
-          <TouchableOpacity
-            className="p-3 mx-2 rounded-full border border-gray-300"
-            onPress={togglePlayPause}
-          >
-            <Ionicons
-              name={isPlaying ? "pause" : "play"}
-              size={24}
-              color="#333"
-            />
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            className="p-3 mx-2 rounded-full border border-gray-300"
-            onPress={seekForward}
-          >
-            <Ionicons name="play-forward" size={24} color="#333" />
-          </TouchableOpacity>
-        </View>
-
-        <Text className="text-gray-700 text-center text-base my-2">
-          {formatTime(currentTime)}
-        </Text>
-
-        <Text className="text-gray-800 font-semibold p-3">
-          Comments ({aggregatedComments.length})
-        </Text>
-
-        <ScrollView className="flex-1">
-          {aggregatedComments.map((comment) => (
-            <View
-              key={comment.id}
-              className="bg-white border border-gray-200 m-2 p-3 rounded-lg flex-row justify-between items-start"
-            >
-              <TouchableOpacity
-                onPress={() => jumpToComment(comment.timestamp)}
-                className="flex-1"
-              >
-                <Text className="text-blue-600 text-xs font-semibold mb-1">
-                  {comment.displayTime}
+              <View className="bg-[#1E1E1E] px-[16px] py-[12px] flex-row items-center justify-between rounded-b-xl">
+                <View className="flex-row items-center gap-[12px]">
+                  <TouchableOpacity onPress={togglePlayPause}>
+                    <Ionicons
+                      name={isPlaying ? "pause" : "play"}
+                      size={20}
+                      color="white"
+                    />
+                  </TouchableOpacity>
+                  <SimpleLineIcons name="volume-1" size={20} color="white" />
+                </View>
+                <Text className="text-white font-ppneuemontreal">
+                  {formatTime(currentTime)}/{formatTime(player.duration)}
                 </Text>
-                <Text className="text-gray-800 text-sm">{comment.text}</Text>
-              </TouchableOpacity>
+                <View className="flex-row items-center gap-[12px]">
+                  <EvilIcons name="location" size={28} color="white" />
+                  <TouchableOpacity onPress={enterFullscreen}>
+                    <Ionicons name="expand" size={20} color="white" />
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </View>
+          )}
+        </Pressable>
+      </View>
 
-              {comment.id && !comment.id.startsWith("draw-") && (
-                <TouchableOpacity
-                  className="w-6 h-6 rounded-full justify-center items-center ml-2 bg-red-500"
-                  onPress={() => deleteComment(comment.id)}
-                >
-                  <Ionicons name="close" size={16} color="white" />
+      {/* Comments */}
+      <View className="flex-row items-center gap-[8px] mb-[16px]">
+        <Text className="px-[16px] mb-2 font-ppneuemontreal-medium">
+          Comments
+        </Text>
+        <Text className="font-ppneuemontreal border border-[#EFEFEF] py-[5px] px-[10px] rounded-xl">
+          {aggregatedComments.length}
+        </Text>
+      </View>
+
+      <ScrollView
+        className="flex-1"
+        contentContainerStyle={{ paddingBottom: 80 }}
+      >
+        {aggregatedComments.map((item) => (
+          <View
+            key={item.id}
+            className={`gap-[12px] px-[16px] py-[12px] ${
+              activeCommentId === item.id ? "bg-[#FAFFEC]" : ""
+            }`}
+          >
+            <View className="flex-row justify-between gap-2 items-center">
+              <View className="flex-row items-center gap-[8px]">
+                <Image
+                  source={AVATARS.user}
+                  style={{ width: 32, height: 32 }}
+                  contentFit="contain"
+                  className="rounded-full"
+                />
+                <View className="flex-row gap-[4px] items-center">
+                  <Text className="text-[#1E1E1E] font-semibold font-ppneuemontreal-medium">
+                    Placeholder User
+                  </Text>
+                  <View className="w-[4px] h-[4px] rounded-full bg-gray-100" />
+                </View>
+                <Text className="text-gray-500 text-sm">
+                  {item.displayTime}
+                </Text>
+              </View>
+              {activeCommentId === item.id && (
+                <TouchableOpacity onPress={() => deleteComment(item.id)}>
+                  <Entypo name="dots-three-horizontal" size={16} color="#333" />
                 </TouchableOpacity>
               )}
             </View>
-          ))}
-        </ScrollView>
+
+            <TouchableOpacity
+              onPress={() => {
+                setActiveCommentId(item.id);
+                jumpToComment(item.timestamp);
+              }}
+            >
+              <Text className="px-[40px] font-ppneuemontreal">{item.text}</Text>
+            </TouchableOpacity>
+
+            {/* Replies */}
+            <View className="px-[40px]">
+              {item.replies.map((reply) => (
+                <View
+                  key={reply.id}
+                  className="flex-row gap-2 items-center mb-2"
+                >
+                  {/* <View className="w-8 h-8 bg-gray-400 rounded-full" /> */}
+                  <Image
+                    source={AVATARS.amina}
+                    style={{ width: 32, height: 32 }}
+                    contentFit="contain"
+                    className="rounded-full"
+                  />
+                  <Text className="font-ppneuemontreal">{reply.text}</Text>
+                  <Text className="text-xs text-gray-500">
+                    {reply.displayTime}
+                  </Text>
+                </View>
+              ))}
+            </View>
+
+            {/* Reply button */}
+            <Pressable
+              onPress={() => {
+                setReplyTo(item);
+                setTimeout(() => inputRef.current?.focus(), 100); // focus input
+              }}
+              className="flex-row items-center gap-2 px-[40px]"
+            >
+              <Text className="text-[#0E8747] font-ppneuemontreal">Reply</Text>
+            </Pressable>
+          </View>
+        ))}
       </ScrollView>
 
-      <View className="absolute bottom-0 left-0 right-0 bg-white border-t border-gray-200 p-2">
-        <View className="flex-row items-center">
-          <Text className="text-gray-700 mx-2">{formatTime(currentTime)}</Text>
-
-          {!drawingEnabled && (
-            <TouchableOpacity onPress={openDrawMode} className="mx-2">
-              <Ionicons name="brush" size={22} color="#333" />
-            </TouchableOpacity>
-          )}
-
-          <TextInput
-            className="flex-1 bg-white border border-gray-300 text-gray-800 px-3 py-2 rounded-lg mr-2 max-h-20"
-            value={newComment}
-            onChangeText={setNewComment}
-            placeholder="Add a comment..."
-            placeholderTextColor="#999"
-            multiline
+      {/* Footer */}
+      <KeyboardAvoidingView
+        behavior="padding"
+        keyboardVerticalOffset={
+          keyboardVisible ? (Platform.OS === "ios" ? 100 : 60) : 0
+        }
+        className="px-[16px] pt-[16px] pb-[16px] bg-[#EFEFEF]"
+      >
+        <View className="flex-row items-center gap-[10px] mb-[12px]">
+          {/* <View className="w-8 h-8 bg-gray-300 rounded-full" /> */}
+          <Image
+            source={AVATARS.user}
+            style={{ width: 32, height: 32 }}
+            contentFit="contain"
+            className="rounded-full"
           />
-
-          <TouchableOpacity
-            className="bg-blue-500 p-3 rounded-full justify-center items-center"
-            onPress={addComment}
-          >
-            <Ionicons name="send" size={18} color="white" />
-          </TouchableOpacity>
+          <TextInput
+            ref={inputRef}
+            placeholder={replyTo ? "Replying..." : "Write your comment here"}
+            className="flex-1 bg-[#EFEFEF] px-3 py-2 rounded-lg font-ppneuemontreal"
+            value={newInput}
+            onChangeText={(txt) => {
+              setNewInput(txt);
+              if (isPlaying) {
+                player.pause();
+                setIsPlaying(false);
+              }
+            }}
+          />
         </View>
 
-        {drawingEnabled && (
-          <View className="flex-row items-center justify-between mt-2 px-4">
-            <View className="flex-row items-center">
-              {["#FF0000", "#00FF00", "#0000FF", "#000000"].map((c) => (
-                <TouchableOpacity key={c} onPress={() => setSelectedColor(c)}>
-                  <View
-                    className="w-8 h-8 rounded-full mr-3"
-                    style={{
-                      backgroundColor: c,
-                      borderWidth: selectedColor === c ? 3 : 0,
-                      borderColor: "#333",
-                    }}
-                  />
-                </TouchableOpacity>
-              ))}
-            </View>
-
-            <View className="flex-row items-center">
-              {[2, 4, 6, 8].map((sw) => (
-                <TouchableOpacity
-                  key={sw}
-                  onPress={() => setSelectedStrokeWidth(sw)}
-                >
-                  <View
-                    style={{
-                      width: sw * 3,
-                      height: sw * 3,
-                      borderRadius: sw * 1.5,
-                      backgroundColor: "#555",
-                      marginHorizontal: 8,
-                      borderWidth: selectedStrokeWidth === sw ? 2 : 0,
-                      borderColor: "#333",
-                    }}
-                  />
-                </TouchableOpacity>
-              ))}
-            </View>
-
-            <View className="flex-row items-center">
-              <TouchableOpacity
-                onPress={undoAtCurrentSecond}
-                className="px-3 py-2 rounded-lg border border-gray-300 mr-3"
-              >
-                <Ionicons name="arrow-undo" size={24} color="#333" />
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                onPress={clearAtCurrentSecond}
-                className="px-3 py-2 rounded-lg border border-gray-300 mr-3"
-              >
-                <Ionicons name="trash" size={24} color="#333" />
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                onPress={closeDrawMode}
-                className="px-3 py-2 rounded-lg border border-gray-300"
-              >
-                <Ionicons name="close-circle" size={26} color="#333" />
-              </TouchableOpacity>
-            </View>
+        <View className="flex-row justify-between items-center mb-[16px]">
+          <View className="flex-row items-center gap-[6px] border border-[#F9F9F9] px-[12px] py-[6px] rounded-xl">
+            <SimpleLineIcons name="clock" size={15} color="#604800" />
+            <Text className="font-ppneuemontreal">
+              {formatTime(currentTime)}
+            </Text>
+            <Entypo name="chevron-small-down" size={16} color="#604800" />
           </View>
-        )}
-      </View>
+
+          <View className="flex-row gap-2 items-center border border-[#F9F9F9] p-1 h-[30px] rounded-xl">
+            <EvilIcons
+              name="pencil"
+              size={28}
+              color="black"
+              onPress={handleDraw}
+            />
+            {drawingEnabled && (
+              <>
+                <Text className="text-[#F9F9F9]">|</Text>
+                <View className="flex-row gap-2">
+                  <Pressable
+                    className={`w-5 h-5 bg-red-500 rounded ${
+                      selectedColor === "#EF4444" ? "border border-black" : ""
+                    }`}
+                    onPress={() => setSelectedColor("#EF4444")}
+                  />
+                  <Pressable
+                    className={`w-5 h-5 bg-green-500 rounded ${
+                      selectedColor === "#22C55E" ? "border border-black" : ""
+                    }`}
+                    onPress={() => setSelectedColor("#22C55E")}
+                  />
+                </View>
+              </>
+            )}
+          </View>
+
+          <Pressable
+            onPress={handleSubmit}
+            className="bg-[#604800] px-[16px] py-[8px] rounded-xl"
+          >
+            <Text className="text-white font-ppneuemontreal">
+              {replyTo ? "Reply" : "Comment"}
+            </Text>
+          </Pressable>
+        </View>
+      </KeyboardAvoidingView>
     </View>
   );
 }
