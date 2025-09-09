@@ -4,10 +4,11 @@ type VideoComment = {
   text: string;
   displayTime: string;
   replies: Reply[];
+  createdAt: number;
   isDrawing?: boolean;
   isAnchor?: boolean;
-  anchorX?: number; // normalized 0–1
-  anchorY?: number; // normalized 0–1
+  anchorX?: number;
+  anchorY?: number;
 };
 
 type VideoPlayerProps = {
@@ -17,7 +18,7 @@ type VideoPlayerProps = {
 
 type SwipeOverlayProps = {
   triggerOverlay: () => void;
-  onSeek: (offset: number) => void; // in seconds
+  onSeek: (offset: number) => void;
 };
 
 type AnchorOverlayProps = {
@@ -28,9 +29,9 @@ type AnchorOverlayProps = {
 
 type AnchorComment = {
   id: string;
-  timestamp: number; // same as text/drawings
-  x: number; // normalized 0–1
-  y: number; // normalized 0–1
+  timestamp: number;
+  x: number;
+  y: number;
   text: string;
   displayTime: string;
 };
