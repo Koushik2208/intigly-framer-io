@@ -29,8 +29,6 @@ export default function RootLayout() {
       <SafeAreaView className="flex-1 bg-transparent">
         <Stack>
           <Stack.Screen name="index" options={{ headerShown: false }} />
-          <Stack.Screen name="canvas" options={{ headerShown: false }} />
-          <Stack.Screen name="test" options={{ headerShown: false }} />
         </Stack>
       </SafeAreaView>
     </GestureHandlerRootView>
